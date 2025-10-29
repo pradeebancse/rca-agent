@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  log-analyzer-agent:
+    build: .
+    container_name: log-analyzer-agent
+    ports:
+      - "8000:8000"
+    environment:
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+      - MAJORDOMO_AI_API_KEY=${MAJORDOMO_AI_API_KEY}
+      - MAJORDOMO_AI_GATEWAY_URL=${MAJORDOMO_AI_GATEWAY_URL}
+      - MAJORDOMO_AI_MODEL=${MAJORDOMO_AI_MODEL}
+    networks:
+      - elastic
+  
+
+networks:
+  elastic:
+    external: true
+    name: poc-agents_elastic

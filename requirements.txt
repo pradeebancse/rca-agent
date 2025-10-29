@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-dotenv
+elasticsearch==8.15.0
+langfuse==3.8.1
+langgraph
+openai
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+opentelemetry-api
+click
