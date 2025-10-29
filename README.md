@@ -46,18 +46,18 @@ Create a `.env` file in the project root with the following variables:
 
 | Variable | Description | Required | Example |
 |----------|-------------|----------|---------|
-| `MAJORDOMO_AI_GATEWAY_URL` | AI gateway base URL | ⚠️ | `https://staging.worker.tailwinds.ai/llm/ModelProfile1` |
-| `MAJORDOMO_AI_API_KEY` | AI gateway API key | ⚠️ | `md-c89c62b9-0ada-42ba-b0d0-f6dbd0167393` |
+| `MAJORDOMO_AI_GATEWAY_URL` | AI gateway base URL | ⚠️ | `URL` |
+| `MAJORDOMO_AI_API_KEY` | AI gateway API key | ⚠️ | `key` |
 | `MAJORDOMO_AI_MODEL` | Model to use through gateway | ⚠️ | `gpt-3.5-turbo` |
 
 ### Observability (Optional)
 
 | Variable | Description | Required | Example |
 |----------|-------------|----------|---------|
-| `LANGFUSE_PUBLIC_KEY` | Langfuse public key for LLM observability | ❌ | `pk-lf-759a26b5-92bb-4712-84c5-146990d46ed8` |
-| `LANGFUSE_SECRET_KEY` | Langfuse secret key | ❌ | `sk-lf-86d26daa-0de9-4ba2-89ce-6b6596c10d42` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key for LLM observability | ❌ | `pk-lf-` |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key | ❌ | `sk-lf-8` |
 | `LANGFUSE_HOST` | Langfuse instance URL | ❌ | `https://cloud.langfuse.com` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint | ❌ | `http://host.docker.internal:4319` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry collector endpoint | ❌ | `` |
 
 ### Environment Variables Notes
 
@@ -206,5 +206,6 @@ python test.py
 ```
 
 ## License
+
 
 This project is part of the POC Agents suite for log analysis and monitoring.
