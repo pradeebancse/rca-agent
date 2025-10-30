@@ -205,7 +205,13 @@ rca-agent/
 python test.py
 ```
 
+### Tracing screenshot
+<img width="1918" height="687" alt="image" src="https://github.com/user-attachments/assets/5e0485c0-487d-4c0d-85c9-472c6c5aecaa" />
+
+
+
 ## License
 
 
 This project is part of the POC Agents suite for log analysis and monitoring.
+
