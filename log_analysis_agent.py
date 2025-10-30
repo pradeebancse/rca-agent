@@ -14,11 +14,14 @@ from openai import OpenAI
 import urllib3
 
 # ------------------ Observability Imports ------------------
-from opentelemetry import trace
+from opentelemetry import trace, propagate
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry import propagate
+from typing import Dict
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 
 # ------------------ Load environment variables ------------------
 load_dotenv()
@@ -35,7 +38,7 @@ client = OpenAI(
 
 # ------------------ OpenTelemetry Setup ------------------
 resource = Resource.create({
-    "service.name": "rca-agent",
+    "service.name": "RCA-Agent",
     "service.namespace": "log-analysis",
     "service.version": "1.0.0",
 })
@@ -46,7 +49,8 @@ processor = BatchSpanProcessor(
 print("🔌 Connecting to OpenTelemetry Collector at", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 provider.add_span_processor(processor)
 trace.set_tracer_provider(provider)
-# tracer = trace.get_tracer("log-analyzer-agent")
+tracer = trace.get_tracer("log-analyzer-agent")
+
 
 # ------------------ Initialize Clients ------------------
 es = Elasticsearch(
@@ -97,6 +101,35 @@ class State(dict):
 
 workflow_trace = None
 
+def inject_otlp_context() -> dict:
+    carrier = {}
+    propagate.inject(carrier)
+    return carrier
+
+
+def activate_langfuse_span(obs):
+    """Activate a Langfuse observation as an OpenTelemetry span context."""
+    trace_id = int(obs.trace_id, 16)
+    span_id = int(obs.id[:16], 16)
+    span_context = SpanContext(
+        trace_id=trace_id,
+        span_id=span_id,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED)
+    )
+    ctx = trace.set_span_in_context(NonRecordingSpan(span_context))
+    return ctx
+
+def get_combined_headers(obs):
+    """Inject both OTel and Langfuse context into outgoing headers."""
+    headers = {}
+    ctx = activate_langfuse_span(obs)
+    propagate.inject(headers, context=ctx)
+    headers["X-Langfuse-Trace-ID"] = obs.trace_id
+    headers["X-Langfuse-Span-ID"] = obs.id
+    return headers
+
+
 # ------------------ Agent Steps ------------------
 def fetch_logs(state: State) -> State:
     global workflow_trace
@@ -131,12 +164,12 @@ def fetch_logs(state: State) -> State:
     return state
 
 
-def analyze_logs(state: State) -> State:
+def analyze_logs(state: dict) -> dict:
     global workflow_trace
     print("🧠 Analyzing logs with split processing...")
     start_time = time.time()
-    
-    # Create parent observation for the entire analysis process
+
+    # ---- Parent Observation ----
     analyze_obs = workflow_trace.start_observation(
         name="analyze_logs_openai", as_type="span",
         input={"logs_length": len(state['logs']), "task": "split_and_analyze_logs"},
@@ -145,26 +178,23 @@ def analyze_logs(state: State) -> State:
 
     logs = state.get('logs', '')
     MAJORDOMO_AI_MODEL = os.getenv("MAJORDOMO_AI_MODEL")
-    
-    # Split logs into two parts
+
+    # ---- Split logs ----
     log_lines = logs.split('\n')
     mid_point = len(log_lines) // 2
-    
     logs_part1 = '\n'.join(log_lines[:mid_point])
     logs_part2 = '\n'.join(log_lines[mid_point:])
-    
     print(f"📊 Split logs into 2 parts: Part 1 ({len(logs_part1)} chars), Part 2 ({len(logs_part2)} chars)")
-    
-    # Get the analysis prompt template
+
     prompt_template = langfuse.get_prompt("log_analysis_prompt", label="production")
-    
-    # === FIRST OpenAI CALL - Analyze Part 1 ===
+
+    # === Part 1 ===
     print("🔍 Analyzing logs part 1...")
     messages_part1 = prompt_template.compile(logs=logs_part1)
-    
+
     openai_obs_1 = analyze_obs.start_observation(
         name="openai_analysis_part1", as_type="generation",
-        model=MAJORDOMO_AI_MODEL, 
+        model=MAJORDOMO_AI_MODEL,
         input={
             "messages": messages_part1,
             "part": "1_of_2",
@@ -173,12 +203,15 @@ def analyze_logs(state: State) -> State:
         metadata={"log_part": "first_half", "analysis_step": "1"}
     )
 
+    headers_part1 = get_combined_headers(openai_obs_1)
+    print("📤 Injected headers (Part 1):", headers_part1)
+
     response_1 = client.chat.completions.create(
-        model=MAJORDOMO_AI_MODEL, 
+        model=MAJORDOMO_AI_MODEL,
         messages=messages_part1,
         temperature=1.0,
         max_tokens=512,
-        extra_headers={"X-Trace-ID": state.get("main_trace_id")}
+        extra_headers=headers_part1
     )
 
     summary_part1 = response_1.choices[0].message.content
@@ -189,13 +222,13 @@ def analyze_logs(state: State) -> State:
     openai_obs_1.end()
     print(f"✅ Part 1 analysis complete ({len(summary_part1)} chars)")
 
-    # === SECOND OpenAI CALL - Analyze Part 2 ===
+    # === Part 2 ===
     print("🔍 Analyzing logs part 2...")
     messages_part2 = prompt_template.compile(logs=logs_part2)
-    
+
     openai_obs_2 = analyze_obs.start_observation(
         name="openai_analysis_part2", as_type="generation",
-        model=MAJORDOMO_AI_MODEL, 
+        model=MAJORDOMO_AI_MODEL,
         input={
             "messages": messages_part2,
             "part": "2_of_2",
@@ -204,12 +237,15 @@ def analyze_logs(state: State) -> State:
         metadata={"log_part": "second_half", "analysis_step": "2"}
     )
 
+    headers_part2 = get_combined_headers(openai_obs_2)
+    print("📤 Injected headers (Part 2):", headers_part2)
+
     response_2 = client.chat.completions.create(
-        model=MAJORDOMO_AI_MODEL, 
+        model=MAJORDOMO_AI_MODEL,
         messages=messages_part2,
         temperature=1.0,
         max_tokens=512,
-        extra_headers={"X-Trace-ID": state.get("main_trace_id")}
+        extra_headers=headers_part2
     )
 
     summary_part2 = response_2.choices[0].message.content
@@ -220,34 +256,17 @@ def analyze_logs(state: State) -> State:
     openai_obs_2.end()
     print(f"✅ Part 2 analysis complete ({len(summary_part2)} chars)")
 
-    # === THIRD OpenAI CALL - Combine Summaries ===
+    # === Combine Summaries ===
     print("🔗 Combining summaries...")
-    combine_messages = [
-        {
-            "role": "system",
-            "content": "You are a log analysis expert. Combine the following two log analysis summaries into one comprehensive summary. Identify common patterns, prioritize the most critical issues, and provide actionable insights."
-        },
-        {
-            "role": "user",
-            "content": f"""Please combine these two log analysis summaries into one comprehensive summary:
+    combine_messages_prompt = langfuse.get_prompt("combine_log_analysis_summaries", label="production")
+    combine_messages = combine_messages_prompt.compile(
+        summary_part_first=summary_part1,
+        summary_part_second=summary_part2
+    )
 
-PART 1 ANALYSIS:
-{summary_part1}
-
-PART 2 ANALYSIS:
-{summary_part2}
-
-Provide a unified summary that:
-1. Highlights the most critical issues across both parts
-2. Identifies patterns or connections between the parts
-3. Prioritizes issues by severity
-4. Provides actionable recommendations"""
-        }
-    ]
-    
     openai_obs_combine = analyze_obs.start_observation(
         name="openai_combine_summaries", as_type="generation",
-        model=MAJORDOMO_AI_MODEL, 
+        model=MAJORDOMO_AI_MODEL,
         input={
             "messages": combine_messages,
             "task": "combine_summaries",
@@ -257,12 +276,15 @@ Provide a unified summary that:
         metadata={"analysis_step": "3_combine", "summary_type": "final_unified"}
     )
 
+    headers_combine = get_combined_headers(openai_obs_combine)
+    print("📤 Injected headers (Combine):", headers_combine)
+
     response_combined = client.chat.completions.create(
-        model=MAJORDOMO_AI_MODEL, 
+        model=MAJORDOMO_AI_MODEL,
         messages=combine_messages,
-        temperature=0.7,  # Lower temperature for more consistent combining
-        max_tokens=1024,  # More tokens for comprehensive summary
-        extra_headers={"X-Trace-ID": state.get("main_trace_id")}
+        temperature=0.7,
+        max_tokens=1024,
+        extra_headers=headers_combine
     )
 
     final_summary = response_combined.choices[0].message.content
@@ -273,7 +295,7 @@ Provide a unified summary that:
     openai_obs_combine.end()
     print(f"✅ Final combined summary complete ({len(final_summary)} chars)")
 
-    # Update parent observation with complete results
+    # ---- Wrap up parent observation ----
     execution_time = time.time() - start_time
     analyze_obs.update(output={
         "analysis_completed": True,
@@ -294,13 +316,12 @@ Provide a unified summary that:
     })
     analyze_obs.end()
 
-    # Store the final combined summary in state
+    # ---- Update state ----
     state["summary"] = final_summary
     state["part1_summary"] = summary_part1
     state["part2_summary"] = summary_part2
-    
-    return state
 
+    return state
 
 def display_summary(state: State) -> State:
     global workflow_trace
@@ -326,22 +347,22 @@ def display_summary(state: State) -> State:
         }
     )
     
-    # Display the results
-    print("=" * 80)
-    print("🔍 PART 1 ANALYSIS:")
-    print("-" * 40)
-    print(part1_summary)
-    print("\n")
+    # # Display the results
+    # print("=" * 80)
+    # print("🔍 PART 1 ANALYSIS:")
+    # print("-" * 40)
+    # print(part1_summary)
+    # print("\n")
     
-    print("🔍 PART 2 ANALYSIS:")
-    print("-" * 40)
-    print(part2_summary)
-    print("\n")
+    # print("🔍 PART 2 ANALYSIS:")
+    # print("-" * 40)
+    # print(part2_summary)
+    # print("\n")
     
-    print("🎯 FINAL COMBINED SUMMARY:")
-    print("-" * 40)
-    print(final_summary)
-    print("=" * 80)
+    # print("🎯 FINAL COMBINED SUMMARY:")
+    # print("-" * 40)
+    # print(final_summary)
+    # print("=" * 80)
     
     # Update observation with output details
     obs.update(output={
